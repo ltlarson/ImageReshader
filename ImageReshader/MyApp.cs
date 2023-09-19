@@ -127,6 +127,15 @@ namespace ImageReshader
 
             if (key == Key.Escape)
                 window.Close();
+
+            // On Tab key, toggle between preview size and full image size
+            if (key == Key.Tab)
+            {
+                if (window.Size == currentTextureSize)
+                    ResizeWindow(currentTextureSize, true);
+                else
+                    ResizeWindow(currentTextureSize, false);
+            }
         }
 
         /// <summary>
@@ -167,7 +176,7 @@ namespace ImageReshader
                 return;
             }
 
-
+            // If we're dragging our item into the top half of the window, its RGB. Bottom half, depth.
             if(LastMousePosition.Y < window.Size.Y / 2)
             {
                 Gl.ActiveTexture(TextureUnit.Texture0);
@@ -357,6 +366,12 @@ namespace ImageReshader
             Gl.Uniform1(location, 1);
         }
 
+        /// <summary>
+        /// Changes the size of the window to a specified value, with two alternate methods depending on the bool.
+        /// </summary>
+        /// <param name="size">The new window size.</param>
+        /// <param name="isPreviewMode">If false, use the given size as-is. If true, compare the size of the image to the size of the screen.
+        /// When image is smaller than the screen, display the image full-size. When image is larger, display the image at 80% of the screen size.</param>
         private void ResizeWindow(Vector2D<int> size, bool isPreviewMode)
         {
             if(!isPreviewMode)
@@ -471,6 +486,7 @@ namespace ImageReshader
 
         private static void OnResize(Vector2D<int> size)
         {
+            // Ensure that the OpenGL viewport stays the same as our screen size.
             Gl.Viewport(0, 0, (uint)size.X, (uint)size.Y);
         }
 
