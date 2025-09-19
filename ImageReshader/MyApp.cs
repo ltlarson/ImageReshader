@@ -34,17 +34,23 @@ namespace ImageReshader
         /// Frame Buffer Objects
         /// </summary>
         private static uint fbo;
+        private static uint rbo;
 
         private static uint program;
 
         private static uint texture;
         private static uint depthTexture;
+        private static uint rbTexture;
+        private static uint rbdTexture;
 
         private static Vector2 LastMousePosition;
         private static Vector2D<int> currentTextureSize;
         private static Vector2D<int> screenSize;
 
+        private bool windowIsFullImageSize;
+
         #region Shaders
+        //TODO: Find out whether or not I can keep this as-is.
         //TODO: Find out whether or not I can keep this as-is.
         const string vertexCode = @"
         #version 330 core
@@ -79,12 +85,15 @@ namespace ImageReshader
         // A uniform in OpenGL is a value that can be changed outside of the shader by modifying its value.
         // A sampler2D contains both a texture and information on how to sample it.
         // Sampling a texture is basically calculating the color of a pixel on a texture at any given point.
+
         uniform sampler2D uTexture;
-        
+        uniform sampler2D uDepthTexture;
+
         void main()
         {
             // We use GLSL's texture function to sample from the texture at the given input texture coordinates.
             out_color = texture(uTexture, frag_texCoords);
+            gl_FragDepth = texture(uDepthTexture, frag_texCoords).r;
         }";
 
         #endregion
@@ -101,14 +110,14 @@ namespace ImageReshader
             {
                 Size = new Vector2D<int>(1024, 768),
                 Title = "Image Reshader",
-                WindowBorder = WindowBorder.Fixed,
+                WindowBorder = WindowBorder.Hidden,
                 PreferredDepthBufferBits = 256
             });
 
             window.Render += OnRender;
             window.Update += OnUpdate;
             window.Load += OnLoad;
-            window.FramebufferResize += OnResize;
+            window.Resize += OnResize;
             window.Initialize();
             window.FileDrop += OnFileDrop;
         }
@@ -123,7 +132,7 @@ namespace ImageReshader
         /// <param name="arg3">Internal integer ID for the key that was pressed.</param>
         private void KeyDown(IKeyboard keyboard, Key key, int arg3)
         {
-            Console.WriteLine(key);
+            //Console.WriteLine(key);
 
             if (key == Key.Escape)
                 window.Close();
@@ -135,6 +144,17 @@ namespace ImageReshader
                     ResizeWindow(currentTextureSize, true);
                 else
                     ResizeWindow(currentTextureSize, false);
+            }
+            if (key == Key.B)
+            {
+                if (window.WindowBorder == WindowBorder.Hidden)
+                    window.WindowBorder = WindowBorder.Fixed;
+                else
+                {
+                    window.WindowBorder = WindowBorder.Hidden;
+                    if (windowIsFullImageSize)
+                        ResizeWindow(currentTextureSize, false);
+                }
             }
         }
 
@@ -263,29 +283,38 @@ namespace ImageReshader
             fbo = Gl.GenFramebuffer();
             Gl.BindFramebuffer(FramebufferTarget.Framebuffer, fbo);
 
+            LoadShaders();
+            CompileShaders();
+            Gl.UseProgram(program);
+
             // Create texture
             texture = Gl.GenTexture();
             Gl.ActiveTexture(TextureUnit.Texture0);
             Gl.BindTexture(TextureTarget.Texture2D, texture);
             LoadTexture("Images/Guide.png");
 
+            GLEnum ColorStatus = Gl.GetError();
+
+            rbo = Gl.GenFramebuffer();
+            Gl.BindRenderbuffer(RenderbufferTarget.Renderbuffer, rbo);
+
             depthTexture = Gl.GenTexture();
             Gl.ActiveTexture(TextureUnit.Texture1);
             Gl.BindTexture(TextureTarget.Texture2D, depthTexture);
             LoadDepthTexture("Images/depthtest.png");
 
-            if (Gl.CheckFramebufferStatus(FramebufferTarget.Framebuffer) == GLEnum.FramebufferComplete)
+            GLEnum DepthStatus = Gl.CheckFramebufferStatus(FramebufferTarget.Framebuffer);
+            if (DepthStatus == GLEnum.FramebufferComplete)
             {
                 Console.WriteLine("Frame buffer set up correctly.");
             }
             else
             {
                 Console.WriteLine("Frame buffer setup unsuccessful");
+                // Reference the below numbers with: https://learnopengl.com/In-Practice/Debugging
+                Console.WriteLine("Color Attachment Framebuffer Status: " + ((int)ColorStatus));
+                Console.WriteLine("Depth Attachment Framebuffer Status: " + ((int)DepthStatus));
             }
-
-            LoadShaders();
-
-            CompileShaders();
 
             // Our stride constant. The stride must be in bytes, so we take the first attribute (a vec3), multiply it
             // by the size in bytes of a float, and then take our second attribute (a vec2), and do the same
@@ -313,6 +342,7 @@ namespace ImageReshader
         /// <param name="filePath">Path to the file we need to load.</param>
         private unsafe void LoadTexture(string filePath)
         {
+            
             ImageResult result = ImageResult.FromMemory(File.ReadAllBytes(filePath), ColorComponents.RedGreenBlueAlpha);
 
             fixed (byte* ptr = result.Data)
@@ -333,8 +363,7 @@ namespace ImageReshader
             Gl.BindTexture(TextureTarget.Texture2D, 0);
 
             // Get our texture uniform, and set it to 0.
-            int location = Gl.GetUniformLocation(program, "uTexture");
-            Gl.Uniform1(location, 0);
+            Gl.Uniform1(Gl.GetUniformLocation(program, "uTexture"), 0);
         }
 
         /// <summary>
@@ -352,18 +381,49 @@ namespace ImageReshader
 
             Gl.TextureParameter(depthTexture, TextureParameterName.TextureWrapS, (int)TextureWrapMode.Repeat);
             Gl.TextureParameter(depthTexture, TextureParameterName.TextureWrapT, (int)TextureWrapMode.Repeat);
-
             Gl.TextureParameter(depthTexture, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.LinearMipmapLinear);
             Gl.TextureParameter(depthTexture, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Linear);
-
             Gl.GenerateMipmap(TextureTarget.Texture2D);
-
-            Gl.FramebufferTexture2D(FramebufferTarget.Framebuffer, FramebufferAttachment.DepthAttachment, GLEnum.Texture1, depthTexture, 0);
-
+            Gl.Uniform1(Gl.GetUniformLocation(program, "uDepthTexture"), 1);
             Gl.BindTexture(TextureTarget.Texture2D, 0);
 
-            int location = Gl.GetUniformLocation(program, "uTexture");
-            Gl.Uniform1(location, 1);
+            // rbd and rb textures are dummies that map to a dummy render buffer (rbo) so that reshade picks up on a depth buffer
+            // it will ultimately target the default frame buffer object
+
+            // note: reshade doesn't show the depth buffer in the DisplayDepth.fx properly (???), you can verify this is working
+            // by looking at the normal map generated. I verified this by correctly applying a DOF shader to the input image.
+
+            rbdTexture = Gl.GenTexture();
+            Gl.BindTexture(GLEnum.Texture2D, rbdTexture);
+            result = ImageResult.FromMemory(File.ReadAllBytes(filePath), ColorComponents.RedGreenBlueAlpha);
+            fixed (byte* ptr = result.Data)
+            {
+                Gl.TexImage2D(TextureTarget.Texture2D, 0, InternalFormat.DepthComponent24, (uint)result.Width, (uint)result.Height, 0, PixelFormat.DepthComponent, PixelType.UnsignedInt, ptr);
+            }
+            Gl.TextureParameter(rbdTexture, TextureParameterName.TextureWrapS, (int)TextureWrapMode.Repeat);
+            Gl.TextureParameter(rbdTexture, TextureParameterName.TextureWrapT, (int)TextureWrapMode.Repeat);
+            Gl.TextureParameter(rbdTexture, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.LinearMipmapLinear);
+            Gl.TextureParameter(rbdTexture, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Linear);
+            Gl.FramebufferTexture2D(FramebufferTarget.Framebuffer, FramebufferAttachment.DepthAttachment, TextureTarget.Texture2D, rbdTexture, 0);
+            Gl.RenderbufferStorage(GLEnum.Renderbuffer, InternalFormat.DepthComponent24, (uint)result.Width, (uint)result.Height);
+            Gl.BindRenderbuffer(GLEnum.Renderbuffer, 0);
+            Gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+            Gl.FramebufferRenderbuffer(FramebufferTarget.Framebuffer, FramebufferAttachment.DepthAttachment, GLEnum.DepthAttachment, rbo);
+            Gl.GenerateMipmap(TextureTarget.Texture2D);
+            Gl.BindTexture(GLEnum.Texture2D, 0);
+
+            rbTexture = Gl.GenTexture();
+            Gl.BindFramebuffer(FramebufferTarget.Framebuffer, fbo);
+            Gl.BindTexture(GLEnum.Texture2D, rbTexture);
+            Gl.TexImage2D(TextureTarget.Texture2D, 0, InternalFormat.Rgba, (uint)result.Width, (uint)result.Height, 0, PixelFormat.Rgba, PixelType.UnsignedByte, null);
+            Gl.TextureParameter(rbTexture, TextureParameterName.TextureWrapS, (int)TextureWrapMode.Repeat);
+            Gl.TextureParameter(rbTexture, TextureParameterName.TextureWrapT, (int)TextureWrapMode.Repeat);
+            Gl.TextureParameter(rbTexture, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.LinearMipmapLinear);
+            Gl.TextureParameter(rbTexture, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Linear);
+            Gl.GenerateMipmap(TextureTarget.Texture2D);
+            Gl.FramebufferTexture2D(FramebufferTarget.Framebuffer, FramebufferAttachment.ColorAttachment0, TextureTarget.Texture2D, rbTexture, 0);
+            Gl.BindTexture(GLEnum.Texture2D, 0);
+            Gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
         }
 
         /// <summary>
@@ -374,15 +434,36 @@ namespace ImageReshader
         /// When image is smaller than the screen, display the image full-size. When image is larger, display the image at 80% of the screen size.</param>
         private void ResizeWindow(Vector2D<int> size, bool isPreviewMode)
         {
-            if(!isPreviewMode)
-                window.Size = size;
+            if (!isPreviewMode)
+            {
+                window.Size = new Vector2D<int>(size.X, size.Y);
+                windowIsFullImageSize = true;
+            }
             else
             {
-                if (screenSize.X <= size.X)
+                windowIsFullImageSize = false;
+                if (screenSize.X < size.X || screenSize.Y < size.Y)
                 {
-                    float bufferAmount = screenSize.Y * 0.8f;
-                    float widthTemp = ((float)screenSize.Y / (float)screenSize.X) * (screenSize.X - (int)bufferAmount);
-                    window.Size = new Vector2D<int>(screenSize.X - (int)bufferAmount, (int)widthTemp);
+                    //float bufferAmount = screenSize.Y * 0.8f;
+                    //float widthTemp = ((float)screenSize.Y / (float)screenSize.X) * (screenSize.X - (int)bufferAmount);
+                    //window.Size = new Vector2D<int>(screenSize.X - (int)bufferAmount, (int)widthTemp);
+
+                    //Initial math based on width
+                    float newWidth = screenSize.X * 0.8f;
+                    float findHeight = size.Y * (newWidth / size.X);
+
+                    //If it turns out that height is still larger than screen height, base it on height instead
+                    if (findHeight > screenSize.Y)
+                    {
+                        float newHeight = screenSize.Y * 0.8f;
+                        float findWidth = size.X * (newHeight / size.Y);
+
+                        window.Size = new Vector2D<int>((int)findWidth, (int)newHeight);
+                        return;
+                    }
+
+                    //Otherwise do the initial width-based values
+                    window.Size = new Vector2D<int>((int)newWidth, (int)findHeight);
                 }
                 else
                     window.Size = size;
@@ -468,20 +549,45 @@ namespace ImageReshader
         /// <param name="deltaTime">Time since last frame.</param>
         private static unsafe void OnRender(double deltaTime)
         {
-            
-            Gl.Clear(ClearBufferMask.ColorBufferBit);
-            Gl.Clear(ClearBufferMask.DepthBufferBit);
+            // First Pass (renders to the dummy rbo so that reshade finds the default fbo)
+            {
+                Gl.Enable(EnableCap.DepthTest);
+                Gl.DepthFunc(DepthFunction.Always);
+                Gl.BindFramebuffer(FramebufferTarget.Framebuffer, fbo);
 
-            Gl.BindVertexArray(vao);
-            Gl.UseProgram(program);
+                Gl.Clear(ClearBufferMask.ColorBufferBit);
+                Gl.Clear(ClearBufferMask.DepthBufferBit);
 
-            Gl.ActiveTexture(TextureUnit.Texture0);
-            Gl.BindTexture(TextureTarget.Texture2D, texture);
+                Gl.BindVertexArray(vao);
+                Gl.UseProgram(program);
 
-            Gl.ActiveTexture(TextureUnit.Texture1);
-            Gl.BindTexture(GLEnum.DepthStencil, depthTexture);
+                Gl.ActiveTexture(TextureUnit.Texture0);
+                Gl.BindTexture(TextureTarget.Texture2D, texture);
+                Gl.ActiveTexture(TextureUnit.Texture1);
+                Gl.BindTexture(TextureTarget.Texture2D, depthTexture);
 
-            Gl.DrawElements(PrimitiveType.Triangles, 6, DrawElementsType.UnsignedInt, (void*)0);
+                Gl.DrawElements(PrimitiveType.Triangles, 6, DrawElementsType.UnsignedInt, (void*)0);
+            }
+
+            // Second Pass (actual fbo work)
+            {
+                Gl.Enable(EnableCap.DepthTest);
+                Gl.DepthFunc(DepthFunction.Always);
+                Gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+
+                Gl.Clear(ClearBufferMask.ColorBufferBit);
+                Gl.Clear(ClearBufferMask.DepthBufferBit);
+
+                Gl.BindVertexArray(vao);
+                Gl.UseProgram(program);
+
+                Gl.ActiveTexture(TextureUnit.Texture0);
+                Gl.BindTexture(TextureTarget.Texture2D, texture);
+                Gl.ActiveTexture(TextureUnit.Texture1);
+                Gl.BindTexture(TextureTarget.Texture2D, depthTexture);
+
+                Gl.DrawElements(PrimitiveType.Triangles, 6, DrawElementsType.UnsignedInt, (void*)0);
+            }
         }
 
         private static void OnResize(Vector2D<int> size)
